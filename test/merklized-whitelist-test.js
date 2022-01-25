@@ -1,209 +1,166 @@
-import { web3 } from "hardhat";
-import keccak256 from 'keccak256';
-import { expect } from "chai";
-import { ethers } from "hardhat";
+const web3 = require("web3");
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
 
-function calc_root_hash(nodes) {
-  hl = nodes.map((addr) => keccake256(addr));
+const emptyNode = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
-  if (hl.length == 0) {
-    return "0x0000000000000000000000000000000000000000000000000000000000000000";
+function calculateHash(input) {
+  return input.map((addr) => web3.utils.soliditySha3(addr));
+}
+
+function calculateRootHash(nodes) {
+  hashes = calculateHash(nodes)
+
+  if (hashes.length == 0) {
+    return emptyNode;
   }
 
-  while (hl.length > 1) {
-    let nhl = [];
-    for (let i = 0; i < hl.length; i += 2) {
-      nhl.push(
-        keccak256(
-          { t: "uint256", v: hl[i] },
+  while (hashes.length > 1) {
+    let treeNodes = [];
+    for (let i = 0; i < hashes.length; i += 2) {
+      treeNodes.push(
+        web3.utils.soliditySha3(
+          { t: "bytes32", v: hashes[i] },
           {
-            t: "uint256",
+            t: "bytes32",
             v:
-              i + 1 < hl.length
-                ? hl[i + 1]
-                : "0x0000000000000000000000000000000000000000000000000000000000000000",
+              i + 1 < hashes.length
+                ? hashes[i + 1]
+                : emptyNode,
           }
         )
       );
     }
 
-    hl = nhl;
+    hashes = treeNodes;
   }
 
-  return hl[0];
+  return hashes[0]; // the root
 }
 
-function get_inclusion_proof(nodes) {
+function getInclusionProof(nodes, index) {
+  var result =[], currentLayer =[...nodes], currentN = index  
 
+    while(currentLayer.length > 1){    
+        // no odd length layers
+        if(currentLayer.length % 2)   
+            currentLayer.push(emptyNode)
+
+        result.push(currentN %2 
+               // sibling is on the left side
+            ? currentLayer[currentN-1]
+               // sibling is on the right side
+            : currentLayer[currentN+1])
+        // move to the next layer up
+        currentN = Math.floor(currentN/2) 
+        currentLayer = oneLevelUp(currentLayer) 
+    } 
+
+    return result  
 }
 
-function get_append_proof(nodes) {
-  let idx = nodes.length
+function oneLevelUp( inputArray ) {     
+  var result = [ ] 
+  var input =[...inputArray] 
 
-  hl = nodes.map((addr) => web3.utils.keccak256(addr));
-  if (idx == hl.length) {
-    // append
-    hl.push(
-      "0x0000000000000000000000000000000000000000000000000000000000000000"
-    );
-  }
-  let proof = [];
+  if(input.length%2 === 1) input.push(emptyNode)     
 
-  while (hl.length > 1 || idx != 0) {
-    nidx = Math.floor(idx / 2) * 2;
-    if (nidx == idx) {
-      nidx += 1;
-    }
+  for(var i =0; i < input.length; i +=2)   
+    result.push(web3.utils.soliditySha3(input[i], input[i + 1]))
 
-    if (nidx < hl.length) {
-      proof.push(hl[nidx]);
-    }
-
-    let nhl = [];
-    for (let i = 0; i < hl.length; i += 2) {
-      let left = hl[i];
-      let right =
-        i + 1 < hl.length
-          ? hl[i + 1]
-          : "0x0000000000000000000000000000000000000000000000000000000000000000";
-      nhl.push(keccak256(left, right));
-    }
-
-    hl = nhl;
-    idx = Math.floor(idx / 2);
-  }
-
-  return proof;
+  return result
 }
 
-describe("MerklizedWhitelist", function () {
-  it("Stake", async function () {
-    const Tree = await ethers.getContractFactory("DynamicMerkleTree");
-    const tree = await Tree.deploy();
-    await tree.deployed();
+function getAppendProof(nodes) {
+  let index = nodes.length
 
-    const Token = await ethers.getContractFactory("TestERC20");
-    const token = await Token.deploy();
-    await token.deployed();
+  hashes = calculateHash(nodes);
+  
+  hashes.push(
+    emptyNode
+  );
+  
+  return getInclusionProof(hashes, index);
+}
 
-    const Staking = await ethers.getContractFactory("MerklizedStaking", {
-      libraries: {
-        DynamicMerkleTree: tree.address,
-      },
-    });
-    const staking = await Staking.deploy(token.address);
-    await staking.deployed();
+describe("MerklizedWhitelist", async () => {
+  let whitelistAddresses;
+  let admin, client, newClient;
+  let merklizedWhitelist;
+  let clientAddress;
 
-    let nodes = [];
-    expect(await staking.rootHash()).to.equal(calc_root_hash(nodes));
-    const [acc0, acc1, acc2, acc3, acc4] = await ethers.getSigners();
 
-    // append acc0 with 1000 tokens
-    await token.mint(acc0.address, 1000);
-    await token.approve(staking.address, 1000);
-    await staking.stake(1000, get_append_proof(nodes));
-    nodes.push([
-      { t: "uint256", v: acc0.address },
-      { t: "uint256", v: 1000 },
-    ]);
-    expect(await staking.rootHash()).to.equal(calc_root_hash(nodes));
+  before("deploy the contract", async () => {
+    [admin, client, newClient] = await ethers.getSigners();
 
-    // append acc1 with 2000 tokens
-    await token.mint(acc1.address, 2000);
-    await token.connect(acc1).approve(staking.address, 2000);
-    await staking.connect(acc1).stake(2000, get_append_proof(nodes));
+    clientAddress = await client.getAddress();
 
-    nodes.push([
-      { t: "uint256", v: acc1.address },
-      { t: "uint256", v: 2000 },
-    ]);
-    expect(await staking.rootHash()).to.equal(calc_root_hash(nodes));
-
-    // append acc2 with 3000 tokens
-    await token.mint(acc2.address, 3000);
-    await token.connect(acc2).approve(staking.address, 3000);
-    await staking.connect(acc2).stake(3000, get_append_proof(nodes));
-
-    nodes.push([
-      { t: "uint256", v: acc2.address },
-      { t: "uint256", v: 3000 },
-    ]);
-    expect(await staking.rootHash()).to.equal(calc_root_hash(nodes));
-
-    // update acc1 with 1000 tokens
-    await token.mint(acc1.address, 1000);
-    await token.connect(acc1).approve(staking.address, 1000);
-    await staking.connect(acc1).stake(1000, get_update_proof(nodes, 1));
-
-    nodes[1] = [
-      { t: "uint256", v: acc1.address },
-      { t: "uint256", v: 3000 },
+    whitelistAddresses = [
+      "0x1E8a9D0Bd8C19bB27CBb38A997b16B8373578E8a",
+      "0xE1B7906410dF6d52598F8a500EC2F07d6D936b1D",
+      "0x6C96f978C5A3f76b871C7243297D5ff100A4cD9F",
+      clientAddress,
+      "0x28A994b7E36eaa9C4f5a38f87787969d8Bd1CFCB",
     ];
-    expect(await staking.rootHash()).to.equal(calc_root_hash(nodes));
+    
+    rootHash = await calculateRootHash(whitelistAddresses);
 
-    // update acc2 with 2000 tokens
-    await token.mint(acc2.address, 2000);
-    await token.connect(acc2).approve(staking.address, 2000);
-    await staking.connect(acc2).stake(2000, get_update_proof(nodes, 2));
+    // console.log(rootHash);
 
-    nodes[2] = [
-      { t: "uint256", v: acc2.address },
-      { t: "uint256", v: 5000 },
-    ];
-    expect(await staking.rootHash()).to.equal(calc_root_hash(nodes));
+    const MerklizedWhitelist = await ethers.getContractFactory("MerklizedWhitelist", admin);
 
-    // unstake acc0
-    await staking.connect(acc0).unstake(get_update_proof(nodes, 0));
-    nodes[0] = [
-      { t: "uint256", v: acc0.address },
-      { t: "uint256", v: 0 },
-    ];
-    expect(await staking.rootHash()).to.equal(calc_root_hash(nodes));
-    expect(await token.balanceOf(acc0.address)).to.equal(1000);
+    merklizedWhitelist = await MerklizedWhitelist.deploy(rootHash)
+    await merklizedWhitelist.deployed();
 
-    // stake acc0 again
-    await token.connect(acc0).approve(staking.address, 500);
-    await staking.connect(acc0).stake(500, get_update_proof(nodes, 0));
-    nodes[0] = [
-      { t: "uint256", v: acc0.address },
-      { t: "uint256", v: 500 },
-    ];
-    expect(await staking.rootHash()).to.equal(calc_root_hash(nodes));
-    expect(await token.balanceOf(acc0.address)).to.equal(500);
   });
 
-  it("Stake 20", async function () {
-    const Tree = await ethers.getContractFactory("DynamicMerkleTree");
-    const tree = await Tree.deploy();
-    await tree.deployed();
+  it("should execute the target function successfully", async () => {
 
-    const Token = await ethers.getContractFactory("TestERC20");
-    const token = await Token.deploy();
-    await token.deployed();
+    const merklizedWhitelistAsClient = merklizedWhitelist.connect(client)
 
-    const Staking = await ethers.getContractFactory("MerklizedStaking", {
-      libraries: {
-        DynamicMerkleTree: tree.address,
-      },
-    });
-    const staking = await Staking.deploy(token.address);
-    await staking.deployed();
 
-    let nodes = [];
-    expect(await staking.rootHash()).to.equal(calc_root_hash(nodes));
-    for (let i = 0; i < 20; i++) {
-      let acc = await ethers.getSigner(i);
-      await token.mint(acc.address, i + 100);
-      await token.connect(acc).approve(staking.address, i + 100);
-      await staking.connect(acc).stake(i + 100, get_append_proof(nodes));
+    const proof = getInclusionProof(
+      calculateHash(whitelistAddresses), 
+      whitelistAddresses.indexOf(client.address)
+    )
 
-      nodes.push([
-        { t: "uint256", v: acc.address },
-        { t: "uint256", v: i + 100 },
-      ]);
-      expect(await staking.rootHash()).to.equal(calc_root_hash(nodes));
-    }
+    await merklizedWhitelistAsClient.target(
+      proof, 
+      whitelistAddresses.indexOf(client.address)
+    )
 
-    expect(await staking.rootHash()).to.equal(calc_root_hash(nodes));
+    expect(await merklizedWhitelist.calledTheFunction(clientAddress)).to.to.true;
+
   });
+
+  it("should update the merkle root by appending a new address to the tree", async () => {
+    const merklizedWhitelistAsAdmin = merklizedWhitelist.connect(admin);
+
+    const proof = getAppendProof(whitelistAddresses);
+
+    // console.log(rootHash)
+    // console.log(proof)
+
+    await expect(
+      merklizedWhitelistAsAdmin.addToWhitelist(
+        proof, newClient.address, whitelistAddresses.length
+      )
+    ).to.emit(merklizedWhitelistAsAdmin, "NewAddressAdded");
+
+    whitelistAddresses.push(newClient.address);
+
+    let root = calculateRootHash(whitelistAddresses);
+
+    expect(await merklizedWhitelistAsAdmin.merkleRoot()).to.be.equal(root)
+  });
+
+  it("reverts because only admin can update the whitelist", async () => {
+    const merklizedWhitelistAsClient = merklizedWhitelist.connect(client);
+
+    const proof = getAppendProof(whitelistAddresses);
+
+    await expect(merklizedWhitelistAsClient.addToWhitelist(
+      proof, newClient.address, whitelistAddresses.length)
+    ).to.be.revertedWith("Caller is not the admin");
+  })
 });

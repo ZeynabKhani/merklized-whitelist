@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
+import "hardhat/console.sol";
+
 contract MerklizedWhitelist {
     address public admin;
     bytes32 public merkleRoot;
@@ -22,7 +24,7 @@ contract MerklizedWhitelist {
 
         bytes32 leaf = keccak256(abi.encodePacked(msg.sender));
 
-        bool isWhiteListed = (MerkleTree.calcRootHashWithoutLength(_index, leaf, _merkleInclusionProof) == merkleRoot);
+        bool isWhiteListed = (MerkleTree.verify(_index, leaf, _merkleInclusionProof) == merkleRoot);
 
         require(isWhiteListed, "Caller is not whitelisted!");
 
@@ -33,7 +35,7 @@ contract MerklizedWhitelist {
     function addToWhitelist(bytes32[] calldata _merkleAppendProof, address _newWhitelistAdr, uint256 _length) public onlyAdmin {
          bytes32 leaf = keccak256(abi.encodePacked(_newWhitelistAdr)); 
 
-         bytes32 newRoot = MerkleTree.append(_length, merkleRoot, leaf, _merkleAppendProof);
+         bytes32 newRoot = MerkleTree.verify(_length, leaf, _merkleAppendProof);
 
          merkleRoot = newRoot;
 
@@ -41,102 +43,33 @@ contract MerklizedWhitelist {
     }
 }
 
+
 library MerkleTree {
 
-    function calcRootHashWithoutLength(
-        uint256 _idx,
-        bytes32 _leafHash,
-        bytes32[] memory _proof
-    ) public pure returns (bytes32 _rootHash) {
-        bytes32 _nodeHash = _leafHash;
+    /**
+     * @dev this function is used both for inclusion proof check and insersion proof check
+     * Note that elements do not need to be sorted
+     * Note When there is an odd number of nodes in a level of a tree, an empty byte must be used in calculating the proof
+     * emotyHash = 0x0000000000000000000000000000000000000000000000000000000000000000
+     */
+    function verify(uint256 _index, bytes32 _leaf, bytes32[] memory _inclusionProof) internal pure returns (bytes32) {
+        bytes32 currentHash = _leaf;
 
-        for (uint256 i = 0; i < _proof.length; i++) {
-            uint256 _peerIdx = (_idx / 2) * 2;
-            bytes32 _peerHash = _proof[i];
-            bytes32 _parentHash = bytes32(0);
-            if (_peerIdx > _idx) {
-                _parentHash = keccak256(abi.encodePacked(_nodeHash, _peerHash));
+        uint256 rightOrLeft = _index;
+
+        for (uint256 i = 0; i < _inclusionProof.length; i++) {
+            bytes32 proofElementHash = _inclusionProof[i];
+
+            // order of the elements in a hash is important
+            if (rightOrLeft % 2 == 0) {
+                currentHash = keccak256(abi.encodePacked(currentHash, proofElementHash));
             } else {
-                _parentHash = keccak256(abi.encodePacked(_peerHash, _nodeHash));
+                currentHash = keccak256(abi.encodePacked(proofElementHash, currentHash));
             }
 
-            _idx = _idx / 2;
-            _nodeHash = _parentHash;
+            rightOrLeft = rightOrLeft/2;
         }
 
-        return _nodeHash;
+        return currentHash;
     }
-
-    function append(
-        uint256 _len,
-        bytes32 _oldRoot,
-        bytes32 _leafHash,
-        bytes32[] memory _proof
-    ) public pure returns (bytes32 _newRoot) {
-        if (_len > 0) {
-            if ((_len & (_len - 1)) == 0) {
-                // 2^n, a new layer will be added.
-                require(_proof[0] == _oldRoot, "ERR_PROOF");
-            } else {
-                require(
-                    _verify(_len, _len, _oldRoot, bytes32(0), _proof),
-                    "ERR_PROOF"
-                );
-            }
-        }
-
-        return _calculateRoot(_len, _len + 1, _leafHash, _proof);
-    }
-
-    function _calculateRoot(
-        uint256 _idx,
-        uint256 _len,
-        bytes32 _leafHash,
-        bytes32[] memory _proof
-    ) public pure returns (bytes32 _rootHash) {
-        if (_len == 0) {
-            return bytes32(0);
-        }
-
-        uint256 _proofIdx = 0;
-        bytes32 _nodeHash = _leafHash;
-
-        while (_len > 1) {
-            uint256 _peerIdx = (_idx / 2) * 2;
-            bytes32 _peerHash = bytes32(0);
-            if (_peerIdx == _idx) {
-                _peerIdx += 1;
-            }
-            if (_peerIdx < _len) {
-                _peerHash = _proof[_proofIdx];
-                _proofIdx += 1;
-            }
-
-            bytes32 _parentHash = bytes32(0);
-            if (_peerIdx >= _len && _idx >= _len) {
-                // pass, _parentHash = bytes32(0)
-            } else if (_peerIdx > _idx) {
-                _parentHash = keccak256(abi.encodePacked(_nodeHash, _peerHash));
-            } else {
-                _parentHash = keccak256(abi.encodePacked(_peerHash, _nodeHash));
-            }
-
-            _len = (_len - 1) / 2 + 1;
-            _idx = _idx / 2;
-            _nodeHash = _parentHash;
-        }
-
-        return _nodeHash;
-    }
-
-    function _verify(
-        uint256 _idx,
-        uint256 _len,
-        bytes32 _root,
-        bytes32 _oldLeafHash,
-        bytes32[] memory _proof
-    ) public pure returns (bool) {
-        return _calculateRoot(_idx, _len, _oldLeafHash, _proof) == _root;
-    }
-
 }
