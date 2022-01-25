@@ -1,4 +1,5 @@
 require('dotenv').config
+require('hardhat-deploy')
 
 let privateKey = process.env.PRIVATE_KEY
 
