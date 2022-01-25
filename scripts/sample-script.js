@@ -2,7 +2,7 @@ const hre = require("hardhat");
 
 async function main() {
 
-  const { deployer } = await hre.getNamedAccounts()
+  const { deployer } = await hre.ethers.getNamedAccounts()
   // hre.ethers.getNamedAccounts
 
   const MerklizedWhitelist = await hre.ethers.getContractFactory("MerklizedWhitelist");
