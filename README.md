@@ -1,4 +1,4 @@
-# Basic Sample Hardhat Project
+# Merklized Whitelist Contract and Tests
 
 Run the following command:
 
